@@ -1,0 +1,11 @@
+target/
+*.class
+*.jar
+*.war
+!**/src/main/**/target/
+!**/src/test/**/target/
+.env
+*.html
+!zap-report.html
+.idea/
+*.iml

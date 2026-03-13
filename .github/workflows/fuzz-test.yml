@@ -1,0 +1,72 @@
+# GitHub Actions: Фаззинг-тестирование Web-приложения
+# Настроено по аналогии с DAST: build -> deploy -> fuzz scan
+
+name: Fuzz Testing
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+  issues: write
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Еженедельный запуск (воскресенье, 02:00 UTC)
+    - cron: "0 2 * * 0"
+  workflow_dispatch:  # Ручной запуск
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build Docker image
+        run: docker build -t webapp:latest .
+
+      - name: Save image
+        run: docker save webapp:latest -o webapp.tar
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: webapp-image
+          path: webapp.tar
+
+  fuzz:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Load Docker image
+        uses: actions/download-artifact@v5
+        with:
+          name: webapp-image
+
+      - name: Load image
+        run: docker load -i webapp.tar
+
+      - name: Start application
+        run: |
+          docker run -d --name webapp -p 5000:5000 webapp:latest
+          sleep 5
+          curl -f http://localhost:5000/health || exit 1
+
+      - name: OWASP ZAP Full Scan (Fuzz + DAST)
+        uses: zaproxy/action-full-scan@v0.13.0
+        with:
+          target: "http://localhost:5000"
+        continue-on-error: true  # Не блокировать при обнаружении уязвимостей
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: zap-report
+          path: report_html.html
+        continue-on-error: true

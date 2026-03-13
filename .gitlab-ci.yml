@@ -1,0 +1,62 @@
+# GitLab CI/CD Pipeline с интеграцией фаззинг-тестирования
+# Настроено по аналогии с DAST: build -> deploy -> fuzz
+
+stages:
+  - build
+  - test
+  - fuzz
+
+variables:
+  FF_NETWORK_PER_BUILD: "true"  # Сеть между сервисами для связи app и fuzzer
+
+# ============ Сборка приложения ============
+build:
+  stage: build
+  image: docker:24
+  services:
+    - docker:24-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - docker login -u gitlab-ci-token -p $CI_JOB_TOKEN $CI_REGISTRY
+  script:
+    - docker build -t $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA -t $CI_REGISTRY_IMAGE:latest .
+    - docker push $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+    - docker push $CI_REGISTRY_IMAGE:latest
+
+# ============ Фаззинг-тестирование (OWASP ZAP) ============
+# Запускается по аналогии с DAST: приложение разворачивается как сервис,
+# затем сканер выполняет активное сканирование (включая фаззинг параметров)
+fuzz:
+  stage: fuzz
+  image: ghcr.io/zaproxy/zaproxy:stable
+  services:
+    - name: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+      alias: webapp
+  variables:
+    TARGET_URL: "http://webapp:5000"
+  script:
+    - zap-full-scan.py -t $TARGET_URL -r zap-report.html -w zap-report.md -I
+  artifacts:
+    when: always
+    paths:
+      - zap-report.html
+      - zap-report.md
+  allow_failure: true  # Не блокировать пайплайн при обнаружении уязвимостей
+
+# ============ Альтернатива: ffuf (лёгкий веб-фаззер) ============
+# Раскомментируйте для использования ffuf вместо ZAP
+# fuzz_ffuf:
+#   stage: fuzz
+#   image: golang:1.21-alpine
+#   services:
+#     - name: $CI_REGISTRY_IMAGE:$CI_COMMIT_SHA
+#       alias: webapp
+#   before_script:
+#     - go install github.com/ffuf/ffuf/v2@latest
+#   script:
+#     - ffuf -u "http://webapp:5000/api/users?id=FUZZ" -w /usr/share/wordlists/rockyou.txt -mc 200 -t 10 | tee ffuf-report.txt || true
+#   artifacts:
+#     when: always
+#     paths:
+#       - ffuf-report.txt
